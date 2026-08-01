@@ -224,4 +224,27 @@ describe("Doctor of Credit MCP server", () => {
       ],
     });
   });
+
+  it("rejects unexpected arguments without contacting Doctor of Credit", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "list_categories",
+      arguments: { unexpected: true },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "Invalid arguments for tool list_categories",
+          ),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

@@ -70,7 +70,7 @@ export function createServer(dependencies: ServerDependencies): McpServer {
     "list_categories",
     {
       description: "List the categories available from Doctor of Credit.",
-      inputSchema: z.object({}),
+      inputSchema: z.strictObject({}),
       outputSchema: categoryListSchema,
     },
     async () => {
