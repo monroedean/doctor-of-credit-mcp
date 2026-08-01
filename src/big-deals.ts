@@ -1,16 +1,8 @@
-interface SelectablePost {
-  source: {
-    id: number;
-    url: string;
-    title: string;
-    publishedAt: string;
-    modifiedAt: string | null;
-    articleText: string;
-  };
-  derived: {
-    outdatedWarning: string | null;
-  };
-}
+import {
+  largestDollarMention,
+  largestNumericMention,
+  type SelectablePost,
+} from "./post-selection.js";
 
 export interface SelectionSignals {
   largestDollarMention: number | null;
@@ -24,18 +16,6 @@ interface BigDealPost extends SelectablePost {
   };
 }
 
-function largestMatch(text: string, pattern: RegExp): number | null {
-  const values = [...text.matchAll(pattern)].flatMap((match) => {
-    const rawValue = match[1];
-    if (rawValue === undefined) {
-      return [];
-    }
-    const value = Number(rawValue.replaceAll(",", ""));
-    return Number.isFinite(value) ? [value] : [];
-  });
-  return values.length === 0 ? null : Math.max(...values);
-}
-
 export function selectBigDeals(
   posts: SelectablePost[],
   limit: number,
@@ -43,16 +23,13 @@ export function selectBigDeals(
   return posts
     .flatMap((post) => {
       const searchableText = `${post.source.title}\n${post.source.articleText}`;
-      const largestDollarMention = largestMatch(
-        searchableText,
-        /\$\s*([\d,]+(?:\.\d{1,2})?)/g,
-      );
-      const largestPointsOrMilesMention = largestMatch(
+      const largestDollarAmount = largestDollarMention(searchableText);
+      const largestPointsOrMilesMention = largestNumericMention(
         searchableText,
         /\b([\d,]+)\s+(?:points?|miles?)\b/gi,
       );
       const qualifyingSignalCount =
-        (largestDollarMention !== null && largestDollarMention >= 500 ? 1 : 0) +
+        (largestDollarAmount !== null && largestDollarAmount >= 500 ? 1 : 0) +
         (largestPointsOrMilesMention !== null &&
         largestPointsOrMilesMention >= 50_000
           ? 1
@@ -65,7 +42,7 @@ export function selectBigDeals(
               derived: {
                 ...post.derived,
                 selectionSignals: {
-                  largestDollarMention,
+                  largestDollarMention: largestDollarAmount,
                   largestPointsOrMilesMention,
                   qualifyingSignalCount,
                 } satisfies SelectionSignals,

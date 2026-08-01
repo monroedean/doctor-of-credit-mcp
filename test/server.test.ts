@@ -71,7 +71,246 @@ describe("Doctor of Credit MCP server", () => {
           "Retrieve likely notable Doctor of Credit deal articles using documented amount-mention signals (default limit: 10; maximum: 25).",
         inputSchema: expect.objectContaining({ type: "object" }),
       }),
+      expect.objectContaining({
+        name: "find_bank_bonuses",
+        description:
+          "Find up to 10 likely bank-bonus source articles using optional institution, USPS state, and minimum dollar-mention filters.",
+        inputSchema: expect.objectContaining({ type: "object" }),
+      }),
     ]);
+  });
+
+  it("finds likely bank-bonus articles with derived candidate signals", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 901,
+            link: "https://www.doctorofcredit.com/acme-checking-bonus/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: "Acme checking bonus" },
+            content: { rendered: "<p>Open an account for a $500 bonus.</p>" },
+          },
+          {
+            id: 902,
+            link: "https://www.doctorofcredit.com/card-bonus/",
+            date_gmt: "2026-07-29T14:00:00",
+            modified_gmt: "2026-07-29T15:00:00",
+            title: { rendered: "Credit card bonus" },
+            content: { rendered: "<p>Earn 50,000 points.</p>" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "find_bank_bonuses",
+      arguments: {},
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=bank%20bonus&per_page=100&orderby=relevance&order=desc",
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toEqual({
+      posts: [
+        {
+          source: {
+            id: 901,
+            url: "https://www.doctorofcredit.com/acme-checking-bonus/",
+            title: "Acme checking bonus",
+            publishedAt: "2026-07-30T14:00:00Z",
+            modifiedAt: "2026-07-31T15:00:00Z",
+            articleText: "Open an account for a $500 bonus.",
+          },
+          derived: {
+            outdatedWarning: null,
+            bankBonusSignals: {
+              bonusTermMatched: true,
+              bankingTermMatched: true,
+              largestDollarMention: 500,
+              bankMatch: null,
+              stateMatch: null,
+              amountMinimumMatch: null,
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it("combines bank, state, and minimum-amount source-text filters", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 911,
+            link: "https://www.doctorofcredit.com/acme-new-york-bonus/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: "Acme Bank New York bonus" },
+            content: {
+              rendered: "<p>The article mentions a $750 bonus for NY readers.</p>",
+            },
+          },
+          {
+            id: 912,
+            link: "https://www.doctorofcredit.com/acme-small-bonus/",
+            date_gmt: "2026-07-29T14:00:00",
+            modified_gmt: "2026-07-29T15:00:00",
+            title: { rendered: "Acme Bank New York bonus" },
+            content: { rendered: "<p>The article mentions a $300 bonus.</p>" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "find_bank_bonuses",
+      arguments: { bank: "Acme Bank", state: "ny", amount_min: 500 },
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=Acme%20Bank%20New%20York%20bank%20bonus&per_page=100&orderby=relevance&order=desc",
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toMatchObject({
+      posts: [
+        {
+          source: { id: 911, articleText: "The article mentions a $750 bonus for NY readers." },
+          derived: {
+            bankBonusSignals: {
+              largestDollarMention: 750,
+              bankMatch: true,
+              stateMatch: true,
+              amountMinimumMatch: true,
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      label: "bank",
+      arguments: { bank: "Acme Bank" },
+      title: "Acme Bank checking bonus",
+      content: "<p>Review the $300 offer terms.</p>",
+      expectedQuery: "Acme%20Bank%20bank%20bonus",
+      expectedSignals: { bankMatch: true, stateMatch: null, amountMinimumMatch: null },
+    },
+    {
+      label: "state",
+      arguments: { state: "ca" },
+      title: "California checking bonus",
+      content: "<p>A bank promotion for CA readers.</p>",
+      expectedQuery: "California%20bank%20bonus",
+      expectedSignals: { bankMatch: null, stateMatch: true, amountMinimumMatch: null },
+    },
+    {
+      label: "minimum amount",
+      arguments: { amount_min: 800 },
+      title: "$900 checking bonus",
+      content: "<p>Review the bank's source terms.</p>",
+      expectedQuery: "bank%20bonus",
+      expectedSignals: { bankMatch: null, stateMatch: null, amountMinimumMatch: true },
+    },
+  ])("applies the $label filter independently", async ({ arguments: args, title, content, expectedQuery, expectedSignals }) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 921,
+            link: "https://www.doctorofcredit.com/matched-bank-bonus/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: title },
+            content: { rendered: content },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "find_bank_bonuses",
+      arguments: args,
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=${expectedQuery}&per_page=100&orderby=relevance&order=desc`,
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toMatchObject({
+      posts: [
+        {
+          source: { id: 921 },
+          derived: { bankBonusSignals: expectedSignals },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    { label: "an empty bank", arguments: { bank: "" } },
+    { label: "an invalid state code", arguments: { state: "XX" } },
+    { label: "a state name", arguments: { state: "New York" } },
+    { label: "a zero threshold", arguments: { amount_min: 0 } },
+    { label: "a fractional threshold", arguments: { amount_min: 500.5 } },
+    { label: "an excessive threshold", arguments: { amount_min: 1_000_001 } },
+  ])("rejects $label for bank bonuses without contacting upstream", async ({ arguments: args }) => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "find_bank_bonuses",
+      arguments: args,
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "Invalid arguments for tool find_bank_bonuses",
+          ),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("returns an actionable bank-bonus error without candidates after upstream failure", async () => {
+    const client = await connectClient(() =>
+      Promise.reject(new Error("connect ECONNRESET 192.0.2.10:443")),
+    );
+
+    const result = await client.callTool({
+      name: "find_bank_bonuses",
+      arguments: {},
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not search Doctor of Credit posts: the upstream service could not be reached. Try again later.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
   });
 
   it("returns likely big deals using deterministic derived selection signals", async () => {

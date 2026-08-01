@@ -3,6 +3,7 @@ import { XMLParser } from "fast-xml-parser";
 import { decode } from "html-entities";
 import { z } from "zod";
 
+import { selectBankBonuses, stateNameFor } from "./bank-bonuses.js";
 import { selectBigDeals } from "./big-deals.js";
 
 export interface ServerDependencies {
@@ -88,6 +89,19 @@ const bigDealPostSchema = postSchema.extend({
   }),
 });
 const bigDealResultSchema = z.object({ posts: z.array(bigDealPostSchema) });
+const bankBonusPostSchema = postSchema.extend({
+  derived: postSchema.shape.derived.extend({
+    bankBonusSignals: z.object({
+      bonusTermMatched: z.boolean(),
+      bankingTermMatched: z.boolean(),
+      largestDollarMention: z.number().nonnegative().nullable(),
+      bankMatch: z.boolean().nullable(),
+      stateMatch: z.boolean().nullable(),
+      amountMinimumMatch: z.boolean().nullable(),
+    }),
+  }),
+});
+const bankBonusResultSchema = z.object({ posts: z.array(bankBonusPostSchema) });
 
 function structuredToolResult<T extends Record<string, unknown>>(
   structuredContent: T,
@@ -655,6 +669,49 @@ export function createServer(dependencies: ServerDependencies): McpServer {
         dependencies.now ?? (() => new Date()),
       );
       return structuredToolResult({ posts: selectBigDeals(posts, limit) });
+    },
+  );
+
+  server.registerTool(
+    "find_bank_bonuses",
+    {
+      description:
+        "Find up to 10 likely bank-bonus source articles using optional institution, USPS state, and minimum dollar-mention filters.",
+      inputSchema: z.strictObject({
+        bank: z.string().trim().min(1).max(100).optional(),
+        state: z
+          .string()
+          .trim()
+          .transform((state) => state.toUpperCase())
+          .refine(
+            (state) => stateNameFor(state) !== undefined,
+            "Must be a two-letter USPS state or District of Columbia code",
+          )
+          .optional(),
+        amount_min: z.number().int().positive().max(1_000_000).optional(),
+      }),
+      outputSchema: bankBonusResultSchema,
+    },
+    async ({ bank, state, amount_min }) => {
+      const stateName = state === undefined ? undefined : stateNameFor(state)!;
+      const query = [bank, stateName, "bank bonus"]
+        .filter((term) => term !== undefined)
+        .join(" ");
+      const posts = await searchPosts(
+        dependencies.fetch,
+        query,
+        100,
+        dependencies.now ?? (() => new Date()),
+      );
+      return structuredToolResult({
+        posts: selectBankBonuses(posts, {
+          ...(bank === undefined ? {} : { bank }),
+          ...(state === undefined
+            ? {}
+            : { state: { code: state, name: stateName! } }),
+          ...(amount_min === undefined ? {} : { amountMinimum: amount_min }),
+        }),
+      });
     },
   );
 

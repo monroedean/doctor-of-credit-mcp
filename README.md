@@ -36,6 +36,10 @@ The server currently provides:
   returns an actionable MCP error without comparison data.
 - `get_big_deals(limit?)` retrieves likely notable deal articles. The default
   limit is 10 and the maximum is 25.
+- `find_bank_bonuses(bank?, state?, amount_min?)` retrieves up to 10 likely
+  bank-bonus source articles. `bank` is an institution text signal, `state` is
+  a two-letter USPS state or District of Columbia code (case-insensitive), and
+  `amount_min` is a positive whole-dollar threshold up to $1,000,000.
 
 Post tools return source-backed fields under `source`: the stable ID,
 original URL, title, publication and modification timestamps, and cleaned
@@ -68,6 +72,20 @@ ID, all descending. The matched maxima and qualifying-signal count appear under
 about an offer's value, availability, or validity. Every candidate otherwise
 retains the shared source and warning contract.
 
+`find_bank_bonuses` searches up to 100 WordPress results using the supplied
+institution, the state's full name, and “bank bonus” as search terms. It then
+keeps only articles whose cleaned title/text contains both “bonus” and a
+banking term (`bank`, `banking`, `checking`, `savings`, `credit union`, or
+`deposit account`). Optional filters must also appear in the source text: the
+institution is matched case-insensitively, geography matches the full state
+name or uppercase postal code, and the largest dollar mention must meet
+`amount_min`. Results are ordered by publication date and stable ID, descending,
+then capped at 10. Match booleans and the largest dollar mention live under
+`derived.bankBonusSignals`; they identify candidate evidence only and do not
+assert geographic eligibility, direct-deposit requirements, availability,
+offer value, or current validity. Search failures return errors rather than
+falling back to an incomplete recent-post feed.
+
 Upstream HTTP, network, and response-validation failures are returned as
 actionable MCP tool errors rather than empty or fabricated results.
 
@@ -85,7 +103,6 @@ compiled stdio entry point.
 ## Planned tools
 
 I’d next add higher-level research tools:
-find_bank_bonuses(bank?, state?, amount_min?)
 find_credit_card_offers(issuer?, card?, bonus_min?)
 Those higher-level tools would search and collect likely articles, but let the connected model interpret restrictions, expiration dates, direct-deposit rules, and similar prose. Results should always include:
 Original article URL

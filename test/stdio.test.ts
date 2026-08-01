@@ -29,6 +29,7 @@ describe("stdio entry point", () => {
       "search_posts",
       "compare_offers",
       "get_big_deals",
+      "find_bank_bonuses",
     ]);
   });
 });
