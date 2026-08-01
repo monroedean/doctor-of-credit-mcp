@@ -24,10 +24,14 @@ The server currently provides:
 - `get_recent_posts(category?, limit?)` retrieves recent posts from WordPress,
   optionally filtered by a category slug returned by `list_categories`. The
   default limit is 10 and the maximum is 100.
+- `search_posts(query, category?, after?, limit?)` searches WordPress article
+  text and titles. `category` accepts a slug from `list_categories`, `after`
+  accepts an ISO calendar date (`YYYY-MM-DD`) and excludes older publications,
+  and `limit` defaults to 10 with a maximum of 100.
 
-`get_post` returns source-backed fields under `post.source`: the stable ID,
+Post tools return source-backed fields under `source`: the stable ID,
 original URL, title, publication and modification timestamps, and cleaned
-article text. Interpretive fields live separately under `post.derived`. The
+article text. Interpretive fields live separately under `derived`. The
 server sets `derived.outdatedWarning` when the article has not been modified
 for more than 180 days. This conservative threshold uses the only dependable
 freshness signal available in the source contract—the modification timestamp—
@@ -40,6 +44,10 @@ shape, but RSS does not publish a modification timestamp, so `modifiedAt` is
 `null` for those results. Their outdated warning conservatively uses the
 publication timestamp instead. The server does not persist retrieved content
 or metadata.
+
+`search_posts` uses WordPress search directly so relevance and all filters are
+applied by the source. It does not fall back to the recent-post RSS feed,
+because that feed cannot provide a complete or relevance-ranked search result.
 
 Upstream HTTP, network, and response-validation failures are returned as
 actionable MCP tool errors rather than empty or fabricated results.
@@ -58,7 +66,6 @@ compiled stdio entry point.
 ## Planned tools
 
 I’d design the server around a few dependable retrieval tools:
-search_posts(query, category?, after?, limit?)
 get_big_deals(limit?)
 Then add higher-level research tools:
 find_bank_bonuses(bank?, state?, amount_min?)

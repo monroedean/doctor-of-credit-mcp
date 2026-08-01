@@ -15,6 +15,12 @@ const OUTDATED_RSS_WARNING =
   "This RSS post was published more than 180 days ago and may be outdated. RSS does not provide a modification date; verify the offer against the source before relying on it.";
 
 class UnknownCategoryError extends Error {}
+class UpstreamHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Upstream returned HTTP ${status}`);
+  }
+}
+class InvalidUpstreamResponseError extends Error {}
 
 const wordpressCategorySchema = z.object({
   id: z.number().int().nonnegative(),
@@ -107,6 +113,31 @@ function normalizePost(
     },
     derived: { outdatedWarning: outdatedWarningFor(modifiedAt, now) },
   };
+}
+
+async function fetchWordpressCategoryId(
+  fetcher: typeof fetch,
+  category: string,
+) {
+  const response = await fetcher(
+    `https://www.doctorofcredit.com/wp-json/wp/v2/categories?slug=${encodeURIComponent(category)}`,
+    { headers: { accept: "application/json" } },
+  );
+  if (!response.ok) {
+    throw new UpstreamHttpError(response.status);
+  }
+  let categories: z.infer<typeof wordpressCategorySchema>[];
+  try {
+    categories = z.array(wordpressCategorySchema).parse(await response.json());
+  } catch {
+    throw new InvalidUpstreamResponseError();
+  }
+  if (categories.length === 0) {
+    throw new UnknownCategoryError(
+      `Unknown Doctor of Credit category slug: ${category}. Use list_categories to discover valid category slugs.`,
+    );
+  }
+  return categories[0]!.id;
 }
 
 const rssItemSchema = z.object({
@@ -223,22 +254,7 @@ async function fetchRecentWordpressPosts(
 ) {
   let categoryId: number | undefined;
   if (category !== undefined) {
-    const categoryResponse = await fetcher(
-      `https://www.doctorofcredit.com/wp-json/wp/v2/categories?slug=${encodeURIComponent(category)}`,
-      { headers: { accept: "application/json" } },
-    );
-    if (!categoryResponse.ok) {
-      throw new Error(`WordPress returned HTTP ${categoryResponse.status}`);
-    }
-    const categories = z
-      .array(wordpressCategorySchema)
-      .parse(await categoryResponse.json());
-    if (categories.length === 0) {
-      throw new UnknownCategoryError(
-        `Unknown Doctor of Credit category slug: ${category}. Use list_categories to discover valid category slugs.`,
-      );
-    }
-    categoryId = categories[0]!.id;
+    categoryId = await fetchWordpressCategoryId(fetcher, category);
   }
   const categoryQuery =
     categoryId === undefined ? "" : `&categories=${categoryId}`;
@@ -301,6 +317,65 @@ async function fetchRecentPosts(
         "Could not retrieve recent Doctor of Credit posts: WordPress and RSS were unavailable or returned invalid data. Try again later.",
       );
     }
+  }
+}
+
+async function searchPosts(
+  fetcher: typeof fetch,
+  query: string,
+  limit: number,
+  now: () => Date,
+  category?: string,
+  after?: string,
+) {
+  let response: Response;
+  try {
+    let categoryId: number | undefined;
+    if (category !== undefined) {
+      categoryId = await fetchWordpressCategoryId(fetcher, category);
+    }
+    const categoryQuery =
+      categoryId === undefined ? "" : `&categories=${categoryId}`;
+    const afterQuery =
+      after === undefined
+        ? ""
+        : `&after=${encodeURIComponent(new Date(`${after}T00:00:00.000Z`).toISOString())}`;
+    response = await fetcher(
+      `https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=${encodeURIComponent(query)}&per_page=${limit}&orderby=relevance&order=desc${categoryQuery}${afterQuery}`,
+      { headers: { accept: "application/json" } },
+    );
+  } catch (error) {
+    if (error instanceof UnknownCategoryError) {
+      throw error;
+    }
+    if (error instanceof UpstreamHttpError) {
+      throw new Error(
+        `Could not search Doctor of Credit posts: upstream returned HTTP ${error.status}. Try again later.`,
+      );
+    }
+    if (error instanceof InvalidUpstreamResponseError) {
+      throw new Error(
+        "Could not search Doctor of Credit posts: the upstream response was invalid. Try again later.",
+      );
+    }
+    throw new Error(
+      "Could not search Doctor of Credit posts: the upstream service could not be reached. Try again later.",
+    );
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Could not search Doctor of Credit posts: upstream returned HTTP ${response.status}. Try again later.`,
+    );
+  }
+  try {
+    return z
+      .array(wordpressPostSchema)
+      .parse(await response.json())
+      .map((post) => normalizePost(post, now));
+  } catch {
+    throw new Error(
+      "Could not search Doctor of Credit posts: the upstream response was invalid. Try again later.",
+    );
   }
 }
 
@@ -445,6 +520,45 @@ export function createServer(dependencies: ServerDependencies): McpServer {
           limit,
           dependencies.now ?? (() => new Date()),
           category,
+        ),
+      };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(structuredContent, null, 2),
+          },
+        ],
+        structuredContent,
+      };
+    },
+  );
+
+  server.registerTool(
+    "search_posts",
+    {
+      description:
+        "Search Doctor of Credit posts by text, optionally filtered by category slug and publication date (default limit: 10; maximum: 100).",
+      inputSchema: z.strictObject({
+        query: z.string().trim().min(1),
+        category: z
+          .string()
+          .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+          .optional(),
+        after: z.iso.date().optional(),
+        limit: z.number().int().positive().max(100).optional().default(10),
+      }),
+      outputSchema: postListResultSchema,
+    },
+    async ({ query, category, after, limit }) => {
+      const structuredContent = {
+        posts: await searchPosts(
+          dependencies.fetch,
+          query,
+          limit,
+          dependencies.now ?? (() => new Date()),
+          category,
+          after,
         ),
       };
       return {

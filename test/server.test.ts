@@ -53,7 +53,303 @@ describe("Doctor of Credit MCP server", () => {
           "Retrieve recent Doctor of Credit posts, optionally filtered by category slug (default limit: 10; maximum: 100).",
         inputSchema: expect.objectContaining({ type: "object" }),
       }),
+      expect.objectContaining({
+        name: "search_posts",
+        description:
+          "Search Doctor of Credit posts by text, optionally filtered by category slug and publication date (default limit: 10; maximum: 100).",
+        inputSchema: expect.objectContaining({ type: "object" }),
+      }),
     ]);
+  });
+
+  it("searches posts by text through WordPress with the shared post contract", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 501,
+            link: "https://www.doctorofcredit.com/acme-bank-bonus/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: "Acme Bank &amp; $500 Bonus" },
+            content: {
+              rendered: "<p>Open an Acme account and earn <strong>$500</strong>.</p>",
+            },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: { query: "Acme $500" },
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=Acme%20%24500&per_page=10&orderby=relevance&order=desc",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(result.structuredContent).toEqual({
+      posts: [
+        {
+          source: {
+            id: 501,
+            url: "https://www.doctorofcredit.com/acme-bank-bonus/",
+            title: "Acme Bank & $500 Bonus",
+            publishedAt: "2026-07-30T14:00:00Z",
+            modifiedAt: "2026-07-31T15:00:00Z",
+            articleText: "Open an Acme account and earn $500.",
+          },
+          derived: { outdatedWarning: null },
+        },
+      ],
+    });
+  });
+
+  it("combines category, publication-date, and limit search filters", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              id: 7,
+              count: 42,
+              link: "https://www.doctorofcredit.com/category/bank-account-bonuses/",
+              name: "Bank Account Bonuses",
+              slug: "bank-account-bonuses",
+            },
+          ]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([]), { status: 200 }),
+      );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: {
+        query: "checking bonus",
+        category: "bank-account-bonuses",
+        after: "2026-07-01",
+        limit: 3,
+      },
+    });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/categories?slug=bank-account-bonuses",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=checking%20bonus&per_page=3&orderby=relevance&order=desc&categories=7&after=2026-07-01T00%3A00%3A00.000Z",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(result.structuredContent).toEqual({ posts: [] });
+  });
+
+  it.each([
+    {
+      label: "publication date",
+      arguments: { query: "bonus", after: "2026-01-15" },
+      expectedUrl:
+        "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=bonus&per_page=10&orderby=relevance&order=desc&after=2026-01-15T00%3A00%3A00.000Z",
+    },
+    {
+      label: "limit",
+      arguments: { query: "bonus", limit: 2 },
+      expectedUrl:
+        "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=bonus&per_page=2&orderby=relevance&order=desc",
+    },
+  ])("applies the $label search filter independently", async ({ arguments: args, expectedUrl }) => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }));
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: args,
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(expectedUrl, expect.any(Object));
+    expect(result.structuredContent).toEqual({ posts: [] });
+  });
+
+  it("applies the category search filter independently", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              id: 12,
+              count: 8,
+              link: "https://www.doctorofcredit.com/category/credit-card-bonuses/",
+              name: "Credit Card Bonuses",
+              slug: "credit-card-bonuses",
+            },
+          ]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([]), { status: 200 }),
+      );
+    const client = await connectClient(fetcher);
+
+    await client.callTool({
+      name: "search_posts",
+      arguments: { query: "welcome offer", category: "credit-card-bonuses" },
+    });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=welcome%20offer&per_page=10&orderby=relevance&order=desc&categories=12",
+      expect.any(Object),
+    );
+  });
+
+  it.each([
+    { label: "an empty query", arguments: { query: "" } },
+    { label: "a whitespace-only query", arguments: { query: "   " } },
+    { label: "a malformed date", arguments: { query: "bonus", after: "July 1" } },
+    { label: "an impossible date", arguments: { query: "bonus", after: "2026-02-30" } },
+    { label: "an empty category", arguments: { query: "bonus", category: "" } },
+    { label: "a category name", arguments: { query: "bonus", category: "Bank Bonuses" } },
+    { label: "a zero limit", arguments: { query: "bonus", limit: 0 } },
+    { label: "a fractional limit", arguments: { query: "bonus", limit: 1.5 } },
+    { label: "a limit above 100", arguments: { query: "bonus", limit: 101 } },
+  ])("rejects $label for search without contacting upstream", async ({ arguments: args }) => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: args,
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining("Invalid arguments for tool search_posts"),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("returns a clear search error for a category slug that does not exist", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }));
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: { query: "bonus", category: "not-a-real-category" },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Unknown Doctor of Credit category slug: not-a-real-category. Use list_categories to discover valid category slugs.",
+        },
+      ],
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: "category lookup HTTP failure",
+      response: new Response("maintenance", { status: 503 }),
+      error:
+        "Could not search Doctor of Credit posts: upstream returned HTTP 503. Try again later.",
+    },
+    {
+      label: "invalid category lookup response",
+      response: new Response(JSON.stringify([{ id: "not-a-number" }]), {
+        status: 200,
+      }),
+      error:
+        "Could not search Doctor of Credit posts: the upstream response was invalid. Try again later.",
+    },
+  ])("accurately reports a $label", async ({ response, error }) => {
+    const client = await connectClient(() => Promise.resolve(response));
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: { query: "bonus", category: "banking" },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [{ type: "text", text: error }],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
+  });
+
+  it.each([
+    {
+      label: "an upstream HTTP failure",
+      response: new Response("maintenance", { status: 503 }),
+      error:
+        "Could not search Doctor of Credit posts: upstream returned HTTP 503. Try again later.",
+    },
+    {
+      label: "an invalid upstream response",
+      response: new Response(JSON.stringify([{ id: "not-a-number" }]), { status: 200 }),
+      error:
+        "Could not search Doctor of Credit posts: the upstream response was invalid. Try again later.",
+    },
+  ])("returns an actionable error for $label without results", async ({ response, error }) => {
+    const client = await connectClient(() => Promise.resolve(response));
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: { query: "bonus" },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [{ type: "text", text: error }],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
+  });
+
+  it("does not expose transport details or invent search results after a network failure", async () => {
+    const client = await connectClient(() =>
+      Promise.reject(new Error("connect ECONNRESET 192.0.2.10:443")),
+    );
+
+    const result = await client.callTool({
+      name: "search_posts",
+      arguments: { query: "bonus" },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not search Doctor of Credit posts: the upstream service could not be reached. Try again later.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
   });
 
   it("retrieves the 10 most recent WordPress posts by default", async () => {
