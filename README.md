@@ -1,6 +1,6 @@
 # doctor-of-credit-mcp
 
-MCP is the better abstraction because an AI client can interpret the articles at request time instead of forcing them into a rigid API schema.
+People researching bank bonuses, credit-card offers, and other deals published by Doctor of Credit must currently browse and interpret individual articles themselves. The source material contains valuable details: eligibility restrictions, expiration dates, direct-deposit requirements, geographic limits, and update history. But those details are expressed as prose and can change over time. AI clients need a dependable way to discover and retrieve that source material without losing provenance or presenting inferred details as facts.
 
 ## Run locally
 
