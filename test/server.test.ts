@@ -59,7 +59,249 @@ describe("Doctor of Credit MCP server", () => {
           "Search Doctor of Credit posts by text, optionally filtered by category slug and publication date (default limit: 10; maximum: 100).",
         inputSchema: expect.objectContaining({ type: "object" }),
       }),
+      expect.objectContaining({
+        name: "compare_offers",
+        description:
+          "Retrieve up to 10 selected Doctor of Credit posts together without merging or inferring their offer terms.",
+        inputSchema: expect.objectContaining({ type: "object" }),
+      }),
     ]);
+  });
+
+  it("compares selected posts while preserving each article's shared contract", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 601,
+            link: "https://www.doctorofcredit.com/acme-checking-bonus/",
+            date_gmt: "2026-07-20T14:30:00",
+            modified_gmt: "2026-07-25T09:15:00",
+            title: { rendered: "Acme Checking $300 Bonus" },
+            content: { rendered: "<p>Acme offers a <strong>$300</strong> bonus.</p>" },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 602,
+            link: "https://www.doctorofcredit.com/example-savings-bonus/",
+            date_gmt: "2025-12-01T12:00:00",
+            modified_gmt: "2026-01-01T12:00:00",
+            title: { rendered: "Example Savings Bonus" },
+            content: { rendered: "<p>Read the source terms &amp; restrictions.</p>" },
+          }),
+          { status: 200 },
+        ),
+      );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "compare_offers",
+      arguments: { post_ids: [601, 602] },
+    });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts/601",
+      expect.any(Object),
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts/602",
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toEqual({
+      posts: [
+        {
+          source: {
+            id: 601,
+            url: "https://www.doctorofcredit.com/acme-checking-bonus/",
+            title: "Acme Checking $300 Bonus",
+            publishedAt: "2026-07-20T14:30:00Z",
+            modifiedAt: "2026-07-25T09:15:00Z",
+            articleText: "Acme offers a $300 bonus.",
+          },
+          derived: { outdatedWarning: null },
+        },
+        {
+          source: {
+            id: 602,
+            url: "https://www.doctorofcredit.com/example-savings-bonus/",
+            title: "Example Savings Bonus",
+            publishedAt: "2025-12-01T12:00:00Z",
+            modifiedAt: "2026-01-01T12:00:00Z",
+            articleText: "Read the source terms & restrictions.",
+          },
+          derived: {
+            outdatedWarning:
+              "This post was last modified more than 180 days ago and may be outdated. Verify the offer against the source before relying on it.",
+          },
+        },
+      ],
+      failures: [],
+    });
+  });
+
+  it.each([
+    { label: "an empty list", postIds: [] },
+    { label: "duplicate IDs", postIds: [601, 601] },
+    { label: "a string ID", postIds: ["601"] },
+    { label: "a non-positive ID", postIds: [0] },
+    { label: "a fractional ID", postIds: [1.5] },
+    { label: "more than 10 IDs", postIds: Array.from({ length: 11 }, (_, index) => index + 1) },
+  ])("rejects $label without contacting upstream", async ({ postIds }) => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "compare_offers",
+      arguments: { post_ids: postIds },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "Invalid arguments for tool compare_offers",
+          ),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing identifier list without contacting upstream", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "compare_offers",
+      arguments: {},
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "Invalid arguments for tool compare_offers",
+          ),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("returns successful posts and attributable failures for a partial comparison", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 601,
+            link: "https://www.doctorofcredit.com/acme-checking-bonus/",
+            date_gmt: "2026-07-20T14:30:00",
+            modified_gmt: "2026-07-25T09:15:00",
+            title: { rendered: "Acme Checking Bonus" },
+            content: { rendered: "<p>Source-backed terms.</p>" },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "rest_post_invalid_id" }), {
+          status: 404,
+        }),
+      );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "compare_offers",
+      arguments: { post_ids: [601, 999999] },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      posts: [{ source: { id: 601, articleText: "Source-backed terms." } }],
+      failures: [
+        {
+          postId: 999999,
+          error:
+            "Could not retrieve Doctor of Credit post 999999: no matching post was found.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("isError");
+  });
+
+  it("returns one actionable error without comparison data when every post fails", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "rest_post_invalid_id" }), {
+          status: 404,
+        }),
+      )
+      .mockRejectedValueOnce(new Error("connect ECONNRESET 192.0.2.10:443"));
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "compare_offers",
+      arguments: { post_ids: [999998, 999999] },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not compare Doctor of Credit offers because none of the requested posts could be retrieved. Failures: 999998: Could not retrieve Doctor of Credit post 999998: no matching post was found.; 999999: Could not retrieve Doctor of Credit post 999999: the upstream service could not be reached. Try again later.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
+  });
+
+  it("does not attribute a mismatched upstream post to the requested ID", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 602,
+          link: "https://www.doctorofcredit.com/different-offer/",
+          date_gmt: "2026-07-20T14:30:00",
+          modified_gmt: "2026-07-25T09:15:00",
+          title: { rendered: "Different offer" },
+          content: { rendered: "<p>Unrequested source text.</p>" },
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "compare_offers",
+      arguments: { post_ids: [601] },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not compare Doctor of Credit offers because none of the requested posts could be retrieved. Failures: 601: Could not retrieve Doctor of Credit post 601: the upstream response was invalid. Try again later.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
   });
 
   it("searches posts by text through WordPress with the shared post contract", async () => {

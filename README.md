@@ -28,6 +28,12 @@ The server currently provides:
   text and titles. `category` accepts a slug from `list_categories`, `after`
   accepts an ISO calendar date (`YYYY-MM-DD`) and excludes older publications,
   and `limit` defaults to 10 with a maximum of 100.
+- `compare_offers(post_ids[])` retrieves between 1 and 10 unique posts by
+  positive integer WordPress ID. It returns each article independently under
+  `posts` and does not merge or infer offer terms. If some posts cannot be
+  retrieved, successful articles remain available and each failure is reported
+  with its requested ID under `failures`. If every retrieval fails, the tool
+  returns an actionable MCP error without comparison data.
 
 Post tools return source-backed fields under `source`: the stable ID,
 original URL, title, publication and modification timestamps, and cleaned
@@ -70,7 +76,6 @@ get_big_deals(limit?)
 Then add higher-level research tools:
 find_bank_bonuses(bank?, state?, amount_min?)
 find_credit_card_offers(issuer?, card?, bonus_min?)
-compare_offers(post_ids[])
 Those higher-level tools would search and collect likely articles, but let the connected model interpret restrictions, expiration dates, direct-deposit rules, and similar prose. Results should always include:
 Original article URL
 Publication and modification dates

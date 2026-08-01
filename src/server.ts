@@ -67,6 +67,29 @@ const postSchema = z.object({
 
 const postResultSchema = z.object({ post: postSchema });
 const postListResultSchema = z.object({ posts: z.array(postSchema) });
+const comparisonResultSchema = z.object({
+  posts: z.array(postSchema),
+  failures: z.array(
+    z.object({
+      postId: z.number().int().positive(),
+      error: z.string(),
+    }),
+  ),
+});
+
+function structuredToolResult<T extends Record<string, unknown>>(
+  structuredContent: T,
+) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(structuredContent, null, 2),
+      },
+    ],
+    structuredContent,
+  };
+}
 
 function cleanHtml(html: string): string {
   return decode(
@@ -226,6 +249,9 @@ async function fetchPost(
     const post = Array.isArray(body)
       ? wordpressPostSchema.parse(body[0])
       : wordpressPostSchema.parse(body);
+    if (typeof urlOrId === "number" && post.id !== urlOrId) {
+      throw new Error("identity-mismatch");
+    }
     const returnedSlug = new URL(post.link).pathname
       .split("/")
       .filter(Boolean)
@@ -444,15 +470,7 @@ export function createServer(dependencies: ServerDependencies): McpServer {
         })),
       };
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(structuredContent, null, 2),
-          },
-        ],
-        structuredContent,
-      };
+      return structuredToolResult(structuredContent);
     },
   );
 
@@ -487,15 +505,7 @@ export function createServer(dependencies: ServerDependencies): McpServer {
           dependencies.now ?? (() => new Date()),
         ),
       };
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(structuredContent, null, 2),
-          },
-        ],
-        structuredContent,
-      };
+      return structuredToolResult(structuredContent);
     },
   );
 
@@ -522,15 +532,7 @@ export function createServer(dependencies: ServerDependencies): McpServer {
           category,
         ),
       };
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(structuredContent, null, 2),
-          },
-        ],
-        structuredContent,
-      };
+      return structuredToolResult(structuredContent);
     },
   );
 
@@ -561,15 +563,66 @@ export function createServer(dependencies: ServerDependencies): McpServer {
           after,
         ),
       };
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(structuredContent, null, 2),
-          },
-        ],
-        structuredContent,
+      return structuredToolResult(structuredContent);
+    },
+  );
+
+  server.registerTool(
+    "compare_offers",
+    {
+      description:
+        "Retrieve up to 10 selected Doctor of Credit posts together without merging or inferring their offer terms.",
+      inputSchema: z.strictObject({
+        post_ids: z
+          .array(z.number().int().positive())
+          .min(1)
+          .max(10)
+          .refine(
+            (postIds) => new Set(postIds).size === postIds.length,
+            "Post IDs must be unique",
+          ),
+      }),
+      outputSchema: comparisonResultSchema,
+    },
+    async ({ post_ids }) => {
+      const now = dependencies.now ?? (() => new Date());
+      const outcomes = await Promise.all(
+        post_ids.map(async (postId) => {
+          try {
+            return {
+              ok: true as const,
+              post: await fetchPost(dependencies.fetch, postId, now),
+            };
+          } catch (error) {
+            return {
+              ok: false as const,
+              failure: {
+                postId,
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : `Could not retrieve Doctor of Credit post ${postId}: an unknown error occurred.`,
+              },
+            };
+          }
+        }),
+      );
+      const structuredContent = {
+        posts: outcomes.flatMap((outcome) =>
+          outcome.ok ? [outcome.post] : [],
+        ),
+        failures: outcomes.flatMap((outcome) =>
+          outcome.ok ? [] : [outcome.failure],
+        ),
       };
+      if (structuredContent.posts.length === 0) {
+        throw new Error(
+          `Could not compare Doctor of Credit offers because none of the requested posts could be retrieved. Failures: ${structuredContent.failures
+            .map((failure) => `${failure.postId}: ${failure.error}`)
+            .join("; ")}`,
+        );
+      }
+      return structuredToolResult(structuredContent);
     },
   );
 

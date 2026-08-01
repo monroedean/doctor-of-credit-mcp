@@ -27,6 +27,7 @@ describe("stdio entry point", () => {
       "get_post",
       "get_recent_posts",
       "search_posts",
+      "compare_offers",
     ]);
   });
 });
