@@ -6,8 +6,11 @@ import { createServer } from "../src/server.js";
 
 const connections: Array<{ close(): Promise<void> }> = [];
 
-async function connectClient(fetcher: typeof fetch) {
-  const server = createServer({ fetch: fetcher });
+async function connectClient(fetcher: typeof fetch, now?: () => Date) {
+  const server = createServer({
+    fetch: fetcher,
+    ...(now === undefined ? {} : { now }),
+  });
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -39,7 +42,244 @@ describe("Doctor of Credit MCP server", () => {
         description: "List the categories available from Doctor of Credit.",
         inputSchema: expect.objectContaining({ type: "object" }),
       }),
+      expect.objectContaining({
+        name: "get_post",
+        description: "Retrieve a Doctor of Credit post by ID or URL.",
+        inputSchema: expect.objectContaining({ type: "object" }),
+      }),
     ]);
+  });
+
+  it("retrieves a post by ID with cleaned text and explicit provenance", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 123,
+          link: "https://www.doctorofcredit.com/example-bank-bonus/",
+          date_gmt: "2026-07-20T14:30:00",
+          modified_gmt: "2026-07-25T09:15:00",
+          title: { rendered: "Example Bank $300 Bonus" },
+          content: {
+            rendered:
+              "<style>.promo { display: none }</style><p>Open an account &amp; receive <strong>$300</strong>.</p><script>trackUser()</script><p>Terms apply&hellip; don&rsquo;t assume validity.</p>",
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_post",
+      arguments: { url_or_id: 123 },
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts/123",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(result.structuredContent).toEqual({
+      post: {
+        source: {
+          id: 123,
+          url: "https://www.doctorofcredit.com/example-bank-bonus/",
+          title: "Example Bank $300 Bonus",
+          publishedAt: "2026-07-20T14:30:00Z",
+          modifiedAt: "2026-07-25T09:15:00Z",
+          articleText:
+            "Open an account & receive $300.\n\nTerms apply… don’t assume validity.",
+        },
+        derived: {
+          outdatedWarning: null,
+        },
+      },
+    });
+  });
+
+  it("retrieves the same post contract by Doctor of Credit URL", async () => {
+    const upstreamPost = {
+      id: 123,
+      link: "https://www.doctorofcredit.com/example-bank-bonus/",
+      date_gmt: "2026-07-20T14:30:00",
+      modified_gmt: "2026-07-25T09:15:00",
+      title: { rendered: "Example Bank Bonus" },
+      content: { rendered: "<p>Source terms.</p>" },
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify([upstreamPost]), { status: 200 }),
+    );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_post",
+      arguments: {
+        url_or_id: "https://www.doctorofcredit.com/example-bank-bonus/",
+      },
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?slug=example-bank-bonus",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(result.structuredContent).toEqual({
+      post: {
+        source: {
+          id: 123,
+          url: upstreamPost.link,
+          title: "Example Bank Bonus",
+          publishedAt: "2026-07-20T14:30:00Z",
+          modifiedAt: "2026-07-25T09:15:00Z",
+          articleText: "Source terms.",
+        },
+        derived: { outdatedWarning: null },
+      },
+    });
+  });
+
+  it("warns without claiming validity when a post has not been updated for 180 days", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 456,
+          link: "https://www.doctorofcredit.com/older-offer/",
+          date_gmt: "2025-12-01T12:00:00",
+          modified_gmt: "2026-01-01T12:00:00",
+          title: { rendered: "Older offer" },
+          content: { rendered: "<p>Review the source terms.</p>" },
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-07-01T12:00:01Z"),
+    );
+
+    const result = await client.callTool({
+      name: "get_post",
+      arguments: { url_or_id: 456 },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      post: {
+        derived: {
+          outdatedWarning:
+            "This post was last modified more than 180 days ago and may be outdated. Verify the offer against the source before relying on it.",
+        },
+      },
+    });
+  });
+
+  it("returns an actionable MCP error when a post does not exist", async () => {
+    const client = await connectClient(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ code: "rest_post_invalid_id" }), {
+          status: 404,
+        }),
+      ),
+    );
+
+    const result = await client.callTool({
+      name: "get_post",
+      arguments: { url_or_id: 999999 },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not retrieve Doctor of Credit post 999999: no matching post was found.",
+        },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      label: "a non-positive ID",
+      urlOrId: 0,
+      error: "Invalid arguments for tool get_post",
+    },
+    { label: "a malformed URL", urlOrId: "not-a-url", error: "Invalid URL" },
+    {
+      label: "a URL from another site",
+      urlOrId: "https://example.com/example-bank-bonus/",
+      error: "Invalid arguments for tool get_post",
+    },
+    {
+      label: "the Doctor of Credit home page",
+      urlOrId: "https://www.doctorofcredit.com/",
+      error: "Invalid arguments for tool get_post",
+    },
+    {
+      label: "a Doctor of Credit category URL",
+      urlOrId: "https://www.doctorofcredit.com/category/deals/",
+      error: "Invalid arguments for tool get_post",
+    },
+  ])("rejects $label without contacting upstream", async ({ urlOrId, error }) => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_post",
+      arguments: { url_or_id: urlOrId },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(error),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("does not expose transport details after a post network failure", async () => {
+    const client = await connectClient(() =>
+      Promise.reject(new Error("connect ECONNRESET 192.0.2.10:443")),
+    );
+
+    const result = await client.callTool({
+      name: "get_post",
+      arguments: { url_or_id: 123 },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not retrieve Doctor of Credit post 123: the upstream service could not be reached. Try again later.",
+        },
+      ],
+    });
+  });
+
+  it("returns an actionable MCP error for an invalid post response", async () => {
+    const client = await connectClient(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ id: "not-a-number" }), { status: 200 }),
+      ),
+    );
+
+    const result = await client.callTool({
+      name: "get_post",
+      arguments: { url_or_id: 123 },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not retrieve Doctor of Credit post 123: the upstream response was invalid. Try again later.",
+        },
+      ],
+    });
   });
 
   it("lists categories from Doctor of Credit as structured content", async () => {

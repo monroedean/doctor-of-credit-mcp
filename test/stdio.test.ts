@@ -22,6 +22,9 @@ describe("stdio entry point", () => {
     await client.connect(transport);
     const { tools } = await client.listTools();
 
-    expect(tools.map((tool) => tool.name)).toEqual(["list_categories"]);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "list_categories",
+      "get_post",
+    ]);
   });
 });

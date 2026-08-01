@@ -15,10 +15,24 @@ npm start
 The process communicates using MCP over stdio. Configure an MCP client to run
 `node /absolute/path/to/doctor-of-credit-mcp/dist/cli.js`.
 
-The initial `list_categories` tool retrieves every category from Doctor of
-Credit's WordPress API and returns a structured category list. Upstream HTTP,
-network, and response-validation failures are returned as actionable MCP tool
-errors rather than empty or fabricated results.
+The server currently provides:
+
+- `list_categories()` retrieves every category from Doctor of Credit's
+  WordPress API.
+- `get_post(url_or_id)` retrieves a post by its positive integer WordPress ID
+  or HTTPS Doctor of Credit article URL.
+
+`get_post` returns source-backed fields under `post.source`: the stable ID,
+original URL, title, publication and modification timestamps, and cleaned
+article text. Interpretive fields live separately under `post.derived`. The
+server sets `derived.outdatedWarning` when the article has not been modified
+for more than 180 days. This conservative threshold uses the only dependable
+freshness signal available in the source contract—the modification timestamp—
+and avoids inferring an offer-specific expiration date from prose. It is a
+prompt to verify the source, not a claim that the offer is valid or expired.
+
+Upstream HTTP, network, and response-validation failures are returned as
+actionable MCP tool errors rather than empty or fabricated results.
 
 ## Development
 
@@ -36,9 +50,7 @@ compiled stdio entry point.
 I’d design the server around a few dependable retrieval tools:
 search_posts(query, category?, after?, limit?)
 get_recent_posts(category?, limit?)
-get_post(url_or_id) — returns cleaned article text and metadata
 get_big_deals(limit?)
-list_categories()
 Then add higher-level research tools:
 find_bank_bonuses(bank?, state?, amount_min?)
 find_credit_card_offers(issuer?, card?, bonus_min?)
