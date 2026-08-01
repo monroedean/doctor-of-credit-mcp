@@ -40,6 +40,10 @@ The server currently provides:
   bank-bonus source articles. `bank` is an institution text signal, `state` is
   a two-letter USPS state or District of Columbia code (case-insensitive), and
   `amount_min` is a positive whole-dollar threshold up to $1,000,000.
+- `find_credit_card_offers(issuer?, card?, bonus_min?)` retrieves up to 10
+  likely credit-card source articles. Issuer and card name are source-text
+  signals; `bonus_min` is a positive integer up to 1,000,000 compared within
+  each source-mentioned unit.
 
 Post tools return source-backed fields under `source`: the stable ID,
 original URL, title, publication and modification timestamps, and cleaned
@@ -86,6 +90,19 @@ assert geographic eligibility, direct-deposit requirements, availability,
 offer value, or current validity. Search failures return errors rather than
 falling back to an incomplete recent-post feed.
 
+`find_credit_card_offers` searches up to 100 WordPress results using the
+supplied issuer, card name, and “credit card offer” as search terms. It keeps
+only articles whose cleaned title/text contains both a credit-card term and an
+offer signal (`bonus`, `offer`, `welcome`, or `sign-up`). Optional issuer and
+card filters must also occur in the source text. `bonus_min` matches when either
+the largest dollar mention or the largest points/miles mention meets the
+threshold in its own source unit; dollars and rewards are never converted or
+valued against one another. Results are ordered by publication date and stable
+ID, descending, then capped at 10. All match booleans and amount mentions live
+under `derived.creditCardOfferSignals`; they are candidate evidence only and do
+not assert eligibility, bonus value, restrictions, availability, or current
+validity. Search failures return errors rather than incomplete RSS results.
+
 Upstream HTTP, network, and response-validation failures are returned as
 actionable MCP tool errors rather than empty or fabricated results.
 
@@ -103,7 +120,6 @@ compiled stdio entry point.
 ## Planned tools
 
 I’d next add higher-level research tools:
-find_credit_card_offers(issuer?, card?, bonus_min?)
 Those higher-level tools would search and collect likely articles, but let the connected model interpret restrictions, expiration dates, direct-deposit rules, and similar prose. Results should always include:
 Original article URL
 Publication and modification dates

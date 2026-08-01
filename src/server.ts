@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { selectBankBonuses, stateNameFor } from "./bank-bonuses.js";
 import { selectBigDeals } from "./big-deals.js";
+import { selectCreditCardOffers } from "./credit-card-offers.js";
 
 export interface ServerDependencies {
   fetch: typeof fetch;
@@ -102,6 +103,22 @@ const bankBonusPostSchema = postSchema.extend({
   }),
 });
 const bankBonusResultSchema = z.object({ posts: z.array(bankBonusPostSchema) });
+const creditCardOfferPostSchema = postSchema.extend({
+  derived: postSchema.shape.derived.extend({
+    creditCardOfferSignals: z.object({
+      creditCardTermMatched: z.boolean(),
+      offerTermMatched: z.boolean(),
+      largestDollarMention: z.number().nonnegative().nullable(),
+      largestPointsOrMilesMention: z.number().int().nonnegative().nullable(),
+      issuerMatch: z.boolean().nullable(),
+      cardMatch: z.boolean().nullable(),
+      bonusMinimumMatch: z.boolean().nullable(),
+    }),
+  }),
+});
+const creditCardOfferResultSchema = z.object({
+  posts: z.array(creditCardOfferPostSchema),
+});
 
 function structuredToolResult<T extends Record<string, unknown>>(
   structuredContent: T,
@@ -710,6 +727,38 @@ export function createServer(dependencies: ServerDependencies): McpServer {
             ? {}
             : { state: { code: state, name: stateName! } }),
           ...(amount_min === undefined ? {} : { amountMinimum: amount_min }),
+        }),
+      });
+    },
+  );
+
+  server.registerTool(
+    "find_credit_card_offers",
+    {
+      description:
+        "Find up to 10 likely credit-card offer source articles using optional issuer, card-name, and minimum source-unit bonus filters.",
+      inputSchema: z.strictObject({
+        issuer: z.string().trim().min(1).max(100).optional(),
+        card: z.string().trim().min(1).max(100).optional(),
+        bonus_min: z.number().int().positive().max(1_000_000).optional(),
+      }),
+      outputSchema: creditCardOfferResultSchema,
+    },
+    async ({ issuer, card, bonus_min }) => {
+      const query = [issuer, card, "credit card offer"]
+        .filter((term) => term !== undefined)
+        .join(" ");
+      const posts = await searchPosts(
+        dependencies.fetch,
+        query,
+        100,
+        dependencies.now ?? (() => new Date()),
+      );
+      return structuredToolResult({
+        posts: selectCreditCardOffers(posts, {
+          ...(issuer === undefined ? {} : { issuer }),
+          ...(card === undefined ? {} : { card }),
+          ...(bonus_min === undefined ? {} : { bonusMinimum: bonus_min }),
         }),
       });
     },

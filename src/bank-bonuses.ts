@@ -1,5 +1,7 @@
 import {
   largestDollarMention,
+  selectRecentCandidates,
+  sourceTextFor,
   type SelectablePost,
 } from "./post-selection.js";
 
@@ -33,60 +35,53 @@ export function selectBankBonuses(
   posts: SelectablePost[],
   filters: BankBonusFilters,
 ) {
-  return posts
-    .flatMap((post) => {
-      const sourceText = `${post.source.title}\n${post.source.articleText}`;
-      const bonusTermMatched = /\bbonus(?:es)?\b/i.test(sourceText);
-      const bankingTermMatched =
-        /\b(?:banks?|banking|checking|savings|credit unions?|deposit accounts?)\b/i.test(
-          sourceText,
-        );
-      const largestAmount = largestDollarMention(sourceText);
-      const bankMatch =
-        filters.bank === undefined
-          ? null
-          : sourceText.toLocaleLowerCase().includes(filters.bank.toLocaleLowerCase());
-      const stateMatch =
-        filters.state === undefined
-          ? null
-          : new RegExp(`\\b${filters.state.name}\\b`, "i").test(sourceText) ||
-            new RegExp(`\\b${filters.state.code}\\b`).test(sourceText);
-      const amountMinimumMatch =
-        filters.amountMinimum === undefined
-          ? null
-          : largestAmount !== null && largestAmount >= filters.amountMinimum;
+  return selectRecentCandidates(posts, (post) => {
+    const sourceText = sourceTextFor(post);
+    const bonusTermMatched = /\bbonus(?:es)?\b/i.test(sourceText);
+    const bankingTermMatched =
+      /\b(?:banks?|banking|checking|savings|credit unions?|deposit accounts?)\b/i.test(
+        sourceText,
+      );
+    const largestAmount = largestDollarMention(sourceText);
+    const bankMatch =
+      filters.bank === undefined
+        ? null
+        : sourceText
+            .toLocaleLowerCase()
+            .includes(filters.bank.toLocaleLowerCase());
+    const stateMatch =
+      filters.state === undefined
+        ? null
+        : new RegExp(`\\b${filters.state.name}\\b`, "i").test(sourceText) ||
+          new RegExp(`\\b${filters.state.code}\\b`).test(sourceText);
+    const amountMinimumMatch =
+      filters.amountMinimum === undefined
+        ? null
+        : largestAmount !== null && largestAmount >= filters.amountMinimum;
 
-      if (
-        !bonusTermMatched ||
-        !bankingTermMatched ||
-        bankMatch === false ||
-        stateMatch === false ||
-        amountMinimumMatch === false
-      ) {
-        return [];
-      }
+    if (
+      !bonusTermMatched ||
+      !bankingTermMatched ||
+      bankMatch === false ||
+      stateMatch === false ||
+      amountMinimumMatch === false
+    ) {
+      return null;
+    }
 
-      return [
-        {
-          ...post,
-          derived: {
-            ...post.derived,
-            bankBonusSignals: {
-              bonusTermMatched,
-              bankingTermMatched,
-              largestDollarMention: largestAmount,
-              bankMatch,
-              stateMatch,
-              amountMinimumMatch,
-            },
-          },
+    return {
+      ...post,
+      derived: {
+        ...post.derived,
+        bankBonusSignals: {
+          bonusTermMatched,
+          bankingTermMatched,
+          largestDollarMention: largestAmount,
+          bankMatch,
+          stateMatch,
+          amountMinimumMatch,
         },
-      ];
-    })
-    .sort(
-      (left, right) =>
-        right.source.publishedAt.localeCompare(left.source.publishedAt) ||
-        right.source.id - left.source.id,
-    )
-    .slice(0, 10);
+      },
+    };
+  });
 }

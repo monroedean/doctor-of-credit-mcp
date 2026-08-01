@@ -30,3 +30,25 @@ export function largestNumericMention(
 export function largestDollarMention(text: string): number | null {
   return largestNumericMention(text, /\$\s*([\d,]+(?:\.\d{1,2})?)/g);
 }
+
+export function sourceTextFor(post: SelectablePost): string {
+  return `${post.source.title}\n${post.source.articleText}`;
+}
+
+export function selectRecentCandidates<T extends SelectablePost>(
+  posts: SelectablePost[],
+  candidateFor: (post: SelectablePost) => T | null,
+  limit = 10,
+): T[] {
+  return posts
+    .flatMap((post) => {
+      const candidate = candidateFor(post);
+      return candidate === null ? [] : [candidate];
+    })
+    .sort(
+      (left, right) =>
+        right.source.publishedAt.localeCompare(left.source.publishedAt) ||
+        right.source.id - left.source.id,
+    )
+    .slice(0, limit);
+}

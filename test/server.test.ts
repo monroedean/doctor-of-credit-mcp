@@ -77,7 +77,244 @@ describe("Doctor of Credit MCP server", () => {
           "Find up to 10 likely bank-bonus source articles using optional institution, USPS state, and minimum dollar-mention filters.",
         inputSchema: expect.objectContaining({ type: "object" }),
       }),
+      expect.objectContaining({
+        name: "find_credit_card_offers",
+        description:
+          "Find up to 10 likely credit-card offer source articles using optional issuer, card-name, and minimum source-unit bonus filters.",
+        inputSchema: expect.objectContaining({ type: "object" }),
+      }),
     ]);
+  });
+
+  it("finds likely credit-card offers with derived candidate signals", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 1001,
+            link: "https://www.doctorofcredit.com/acme-travel-card/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: "Acme Travel credit card offer" },
+            content: { rendered: "<p>Article mentions 75,000 points.</p>" },
+          },
+          {
+            id: 1002,
+            link: "https://www.doctorofcredit.com/checking-offer/",
+            date_gmt: "2026-07-29T14:00:00",
+            modified_gmt: "2026-07-29T15:00:00",
+            title: { rendered: "Checking account offer" },
+            content: { rendered: "<p>Article mentions a $500 bonus.</p>" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "find_credit_card_offers",
+      arguments: {},
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=credit%20card%20offer&per_page=100&orderby=relevance&order=desc",
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toEqual({
+      posts: [
+        {
+          source: {
+            id: 1001,
+            url: "https://www.doctorofcredit.com/acme-travel-card/",
+            title: "Acme Travel credit card offer",
+            publishedAt: "2026-07-30T14:00:00Z",
+            modifiedAt: "2026-07-31T15:00:00Z",
+            articleText: "Article mentions 75,000 points.",
+          },
+          derived: {
+            outdatedWarning: null,
+            creditCardOfferSignals: {
+              creditCardTermMatched: true,
+              offerTermMatched: true,
+              largestDollarMention: null,
+              largestPointsOrMilesMention: 75000,
+              issuerMatch: null,
+              cardMatch: null,
+              bonusMinimumMatch: null,
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it("combines issuer, card-name, and minimum-bonus source-text filters", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 1011,
+            link: "https://www.doctorofcredit.com/acme-traveler-offer/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: "Acme Traveler credit card offer" },
+            content: { rendered: "<p>Article mentions an 80,000 points bonus.</p>" },
+          },
+          {
+            id: 1012,
+            link: "https://www.doctorofcredit.com/acme-traveler-small-offer/",
+            date_gmt: "2026-07-29T14:00:00",
+            modified_gmt: "2026-07-29T15:00:00",
+            title: { rendered: "Acme Traveler credit card offer" },
+            content: { rendered: "<p>Article mentions a 40,000 points bonus.</p>" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "find_credit_card_offers",
+      arguments: { issuer: "Acme", card: "Traveler", bonus_min: 50_000 },
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=Acme%20Traveler%20credit%20card%20offer&per_page=100&orderby=relevance&order=desc",
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toMatchObject({
+      posts: [
+        {
+          source: { id: 1011 },
+          derived: {
+            creditCardOfferSignals: {
+              largestPointsOrMilesMention: 80000,
+              issuerMatch: true,
+              cardMatch: true,
+              bonusMinimumMatch: true,
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      label: "issuer",
+      arguments: { issuer: "Acme" },
+      title: "Acme credit card welcome offer",
+      content: "<p>Article mentions 30,000 points.</p>",
+      expectedQuery: "Acme%20credit%20card%20offer",
+      expectedSignals: { issuerMatch: true, cardMatch: null, bonusMinimumMatch: null },
+    },
+    {
+      label: "card name",
+      arguments: { card: "Traveler" },
+      title: "Traveler credit card welcome offer",
+      content: "<p>Article mentions 30,000 points.</p>",
+      expectedQuery: "Traveler%20credit%20card%20offer",
+      expectedSignals: { issuerMatch: null, cardMatch: true, bonusMinimumMatch: null },
+    },
+    {
+      label: "minimum bonus in source-mentioned dollars",
+      arguments: { bonus_min: 500 },
+      title: "Credit card cash bonus offer",
+      content: "<p>Article mentions a $750 bonus.</p>",
+      expectedQuery: "credit%20card%20offer",
+      expectedSignals: { issuerMatch: null, cardMatch: null, bonusMinimumMatch: true },
+    },
+  ])("applies the $label filter independently", async ({ arguments: args, title, content, expectedQuery, expectedSignals }) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 1021,
+            link: "https://www.doctorofcredit.com/matched-card-offer/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: title },
+            content: { rendered: content },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "find_credit_card_offers",
+      arguments: args,
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://www.doctorofcredit.com/wp-json/wp/v2/posts?search=${expectedQuery}&per_page=100&orderby=relevance&order=desc`,
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toMatchObject({
+      posts: [
+        {
+          source: { id: 1021 },
+          derived: { creditCardOfferSignals: expectedSignals },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    { label: "an empty issuer", arguments: { issuer: "" } },
+    { label: "an empty card name", arguments: { card: "" } },
+    { label: "a zero threshold", arguments: { bonus_min: 0 } },
+    { label: "a fractional threshold", arguments: { bonus_min: 50_000.5 } },
+    { label: "an excessive threshold", arguments: { bonus_min: 1_000_001 } },
+  ])("rejects $label for credit-card offers without contacting upstream", async ({ arguments: args }) => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "find_credit_card_offers",
+      arguments: args,
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "Invalid arguments for tool find_credit_card_offers",
+          ),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("returns an actionable credit-card error without candidates after upstream failure", async () => {
+    const client = await connectClient(() =>
+      Promise.reject(new Error("connect ECONNRESET 192.0.2.10:443")),
+    );
+
+    const result = await client.callTool({
+      name: "find_credit_card_offers",
+      arguments: {},
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not search Doctor of Credit posts: the upstream service could not be reached. Try again later.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
   });
 
   it("finds likely bank-bonus articles with derived candidate signals", async () => {
