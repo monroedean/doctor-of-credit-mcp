@@ -65,7 +65,229 @@ describe("Doctor of Credit MCP server", () => {
           "Retrieve up to 10 selected Doctor of Credit posts together without merging or inferring their offer terms.",
         inputSchema: expect.objectContaining({ type: "object" }),
       }),
+      expect.objectContaining({
+        name: "get_big_deals",
+        description:
+          "Retrieve likely notable Doctor of Credit deal articles using documented amount-mention signals (default limit: 10; maximum: 25).",
+        inputSchema: expect.objectContaining({ type: "object" }),
+      }),
     ]);
+  });
+
+  it("returns likely big deals using deterministic derived selection signals", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 701,
+            link: "https://www.doctorofcredit.com/small-bonus/",
+            date_gmt: "2026-07-31T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: "Small checking bonus" },
+            content: { rendered: "<p>Get a $300 bonus.</p>" },
+          },
+          {
+            id: 702,
+            link: "https://www.doctorofcredit.com/points-offer/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-30T15:00:00",
+            title: { rendered: "Card offer: 75,000 points" },
+            content: { rendered: "<p>Terms may vary.</p>" },
+          },
+          {
+            id: 703,
+            link: "https://www.doctorofcredit.com/large-bank-offer/",
+            date_gmt: "2026-07-29T14:00:00",
+            modified_gmt: "2026-07-29T15:00:00",
+            title: { rendered: "$1,000 bank promotion" },
+            content: { rendered: "<p>Read the source requirements.</p>" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "get_big_deals",
+      arguments: {},
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?per_page=100&orderby=date&order=desc",
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toEqual({
+      posts: [
+        {
+          source: {
+            id: 703,
+            url: "https://www.doctorofcredit.com/large-bank-offer/",
+            title: "$1,000 bank promotion",
+            publishedAt: "2026-07-29T14:00:00Z",
+            modifiedAt: "2026-07-29T15:00:00Z",
+            articleText: "Read the source requirements.",
+          },
+          derived: {
+            outdatedWarning: null,
+            selectionSignals: {
+              largestDollarMention: 1000,
+              largestPointsOrMilesMention: null,
+              qualifyingSignalCount: 1,
+            },
+          },
+        },
+        {
+          source: {
+            id: 702,
+            url: "https://www.doctorofcredit.com/points-offer/",
+            title: "Card offer: 75,000 points",
+            publishedAt: "2026-07-30T14:00:00Z",
+            modifiedAt: "2026-07-30T15:00:00Z",
+            articleText: "Terms may vary.",
+          },
+          derived: {
+            outdatedWarning: null,
+            selectionSignals: {
+              largestDollarMention: null,
+              largestPointsOrMilesMention: 75000,
+              qualifyingSignalCount: 1,
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it("defaults to the 10 highest-ranked big-deal candidates", async () => {
+    const upstreamPosts = Array.from({ length: 12 }, (_, index) => ({
+      id: 800 + index,
+      link: `https://www.doctorofcredit.com/deal-${index + 1}/`,
+      date_gmt: `2026-07-${String(index + 1).padStart(2, "0")}T12:00:00`,
+      modified_gmt: `2026-07-${String(index + 1).padStart(2, "0")}T12:00:00`,
+      title: { rendered: `$${500 + index * 100} promotion` },
+      content: { rendered: "<p>Review the source.</p>" },
+    }));
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify(upstreamPosts), { status: 200 }),
+      );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_big_deals",
+      arguments: {},
+    });
+
+    const structuredContent = result.structuredContent as {
+      posts: Array<{ source: { id: number } }>;
+    };
+    expect(structuredContent.posts.map((post) => post.source.id)).toEqual([
+      811, 810, 809, 808, 807, 806, 805, 804, 803, 802,
+    ]);
+  });
+
+  it("applies an explicit big-deal limit and preserves outdated warnings", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 711,
+            link: "https://www.doctorofcredit.com/older-large-offer/",
+            date_gmt: "2025-11-01T12:00:00",
+            modified_gmt: "2026-01-01T12:00:00",
+            title: { rendered: "$1,500 promotion" },
+            content: { rendered: "<p>Verify the source terms.</p>" },
+          },
+          {
+            id: 712,
+            link: "https://www.doctorofcredit.com/newer-offer/",
+            date_gmt: "2026-07-30T12:00:00",
+            modified_gmt: "2026-07-30T12:00:00",
+            title: { rendered: "$750 promotion" },
+            content: { rendered: "<p>Verify the source terms.</p>" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "get_big_deals",
+      arguments: { limit: 1 },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      posts: [
+        {
+          source: { id: 711 },
+          derived: {
+            outdatedWarning:
+              "This post was last modified more than 180 days ago and may be outdated. Verify the offer against the source before relying on it.",
+            selectionSignals: { largestDollarMention: 1500 },
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    { label: "a zero limit", limit: 0 },
+    { label: "a fractional limit", limit: 1.5 },
+    { label: "a limit above 25", limit: 26 },
+  ])("rejects $label for big deals without contacting upstream", async ({ limit }) => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_big_deals",
+      arguments: { limit },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "Invalid arguments for tool get_big_deals",
+          ),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("returns an actionable error without deals when all upstream sources fail", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("maintenance", { status: 503 }))
+      .mockRejectedValueOnce(new Error("connect ECONNRESET 192.0.2.10:443"));
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_big_deals",
+      arguments: {},
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not retrieve recent Doctor of Credit posts: WordPress and RSS were unavailable or returned invalid data. Try again later.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
   });
 
   it("compares selected posts while preserving each article's shared contract", async () => {

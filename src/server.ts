@@ -3,6 +3,8 @@ import { XMLParser } from "fast-xml-parser";
 import { decode } from "html-entities";
 import { z } from "zod";
 
+import { selectBigDeals } from "./big-deals.js";
+
 export interface ServerDependencies {
   fetch: typeof fetch;
   now?: () => Date;
@@ -76,6 +78,16 @@ const comparisonResultSchema = z.object({
     }),
   ),
 });
+const bigDealPostSchema = postSchema.extend({
+  derived: postSchema.shape.derived.extend({
+    selectionSignals: z.object({
+      largestDollarMention: z.number().nonnegative().nullable(),
+      largestPointsOrMilesMention: z.number().int().nonnegative().nullable(),
+      qualifyingSignalCount: z.number().int().min(1).max(2),
+    }),
+  }),
+});
+const bigDealResultSchema = z.object({ posts: z.array(bigDealPostSchema) });
 
 function structuredToolResult<T extends Record<string, unknown>>(
   structuredContent: T,
@@ -623,6 +635,26 @@ export function createServer(dependencies: ServerDependencies): McpServer {
         );
       }
       return structuredToolResult(structuredContent);
+    },
+  );
+
+  server.registerTool(
+    "get_big_deals",
+    {
+      description:
+        "Retrieve likely notable Doctor of Credit deal articles using documented amount-mention signals (default limit: 10; maximum: 25).",
+      inputSchema: z.strictObject({
+        limit: z.number().int().positive().max(25).optional().default(10),
+      }),
+      outputSchema: bigDealResultSchema,
+    },
+    async ({ limit }) => {
+      const posts = await fetchRecentPosts(
+        dependencies.fetch,
+        100,
+        dependencies.now ?? (() => new Date()),
+      );
+      return structuredToolResult({ posts: selectBigDeals(posts, limit) });
     },
   );
 

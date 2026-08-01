@@ -34,6 +34,8 @@ The server currently provides:
   retrieved, successful articles remain available and each failure is reported
   with its requested ID under `failures`. If every retrieval fails, the tool
   returns an actionable MCP error without comparison data.
+- `get_big_deals(limit?)` retrieves likely notable deal articles. The default
+  limit is 10 and the maximum is 25.
 
 Post tools return source-backed fields under `source`: the stable ID,
 original URL, title, publication and modification timestamps, and cleaned
@@ -55,6 +57,17 @@ or metadata.
 applied by the source. It does not fall back to the recent-post RSS feed,
 because that feed cannot provide a complete or relevance-ranked search result.
 
+`get_big_deals` applies a deterministic candidate policy to the 100 most recent
+posts (using the existing RSS fallback when WordPress is unavailable). An
+article qualifies when its cleaned title or text contains a dollar amount of at
+least $500 or an amount of at least 50,000 immediately followed by “points” or
+“miles.” Candidates are ordered by: number of qualifying signal types, largest
+dollar mention, largest points/miles mention, publication date, then stable post
+ID, all descending. The matched maxima and qualifying-signal count appear under
+`derived.selectionSignals`; they are text-selection signals, not assertions
+about an offer's value, availability, or validity. Every candidate otherwise
+retains the shared source and warning contract.
+
 Upstream HTTP, network, and response-validation failures are returned as
 actionable MCP tool errors rather than empty or fabricated results.
 
@@ -71,9 +84,7 @@ compiled stdio entry point.
 
 ## Planned tools
 
-I’d design the server around a few dependable retrieval tools:
-get_big_deals(limit?)
-Then add higher-level research tools:
+I’d next add higher-level research tools:
 find_bank_bonuses(bank?, state?, amount_min?)
 find_credit_card_offers(issuer?, card?, bonus_min?)
 Those higher-level tools would search and collect likely articles, but let the connected model interpret restrictions, expiration dates, direct-deposit rules, and similar prose. Results should always include:

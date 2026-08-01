@@ -28,6 +28,7 @@ describe("stdio entry point", () => {
       "get_recent_posts",
       "search_posts",
       "compare_offers",
+      "get_big_deals",
     ]);
   });
 });
