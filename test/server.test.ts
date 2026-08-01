@@ -47,7 +47,318 @@ describe("Doctor of Credit MCP server", () => {
         description: "Retrieve a Doctor of Credit post by ID or URL.",
         inputSchema: expect.objectContaining({ type: "object" }),
       }),
+      expect.objectContaining({
+        name: "get_recent_posts",
+        description:
+          "Retrieve recent Doctor of Credit posts, optionally filtered by category slug (default limit: 10; maximum: 100).",
+        inputSchema: expect.objectContaining({ type: "object" }),
+      }),
     ]);
+  });
+
+  it("retrieves the 10 most recent WordPress posts by default", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 201,
+            link: "https://www.doctorofcredit.com/newer-deal/",
+            date_gmt: "2026-07-31T14:00:00",
+            modified_gmt: "2026-07-31T15:00:00",
+            title: { rendered: "Newer deal" },
+            content: { rendered: "<p>Newer source text.</p>" },
+          },
+          {
+            id: 200,
+            link: "https://www.doctorofcredit.com/earlier-deal/",
+            date_gmt: "2026-07-30T14:00:00",
+            modified_gmt: "2026-07-30T14:00:00",
+            title: { rendered: "Earlier deal" },
+            content: { rendered: "<p>Earlier source text.</p>" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "get_recent_posts",
+      arguments: {},
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?per_page=10&orderby=date&order=desc",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(result.structuredContent).toEqual({
+      posts: [
+        {
+          source: {
+            id: 201,
+            url: "https://www.doctorofcredit.com/newer-deal/",
+            title: "Newer deal",
+            publishedAt: "2026-07-31T14:00:00Z",
+            modifiedAt: "2026-07-31T15:00:00Z",
+            articleText: "Newer source text.",
+          },
+          derived: { outdatedWarning: null },
+        },
+        {
+          source: {
+            id: 200,
+            url: "https://www.doctorofcredit.com/earlier-deal/",
+            title: "Earlier deal",
+            publishedAt: "2026-07-30T14:00:00Z",
+            modifiedAt: "2026-07-30T14:00:00Z",
+            articleText: "Earlier source text.",
+          },
+          derived: { outdatedWarning: null },
+        },
+      ],
+    });
+  });
+
+  it("filters recent posts by category slug and explicit limit", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              id: 7,
+              count: 42,
+              link: "https://www.doctorofcredit.com/category/bank-account-bonuses/",
+              name: "Bank Account Bonuses",
+              slug: "bank-account-bonuses",
+            },
+          ]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              id: 301,
+              link: "https://www.doctorofcredit.com/category-matched-deal/",
+              date_gmt: "2026-07-31T10:00:00",
+              modified_gmt: "2026-07-31T10:00:00",
+              title: { rendered: "Category-matched deal" },
+              content: { rendered: "<p>Matched source text.</p>" },
+            },
+          ]),
+          { status: 200 },
+        ),
+      );
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_recent_posts",
+      arguments: { category: "bank-account-bonuses", limit: 2 },
+    });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/categories?slug=bank-account-bonuses",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?per_page=2&orderby=date&order=desc&categories=7",
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+    expect(result.structuredContent).toMatchObject({
+      posts: [{ source: { id: 301 } }],
+    });
+  });
+
+  it("applies an explicit limit without a category", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }));
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_recent_posts",
+      arguments: { limit: 2 },
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?per_page=2&orderby=date&order=desc",
+      expect.any(Object),
+    );
+    expect(result.structuredContent).toEqual({ posts: [] });
+  });
+
+  it("uses the default limit when only a category is provided", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              id: 12,
+              count: 8,
+              link: "https://www.doctorofcredit.com/category/credit-card-bonuses/",
+              name: "Credit Card Bonuses",
+              slug: "credit-card-bonuses",
+            },
+          ]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([]), { status: 200 }),
+      );
+    const client = await connectClient(fetcher);
+
+    await client.callTool({
+      name: "get_recent_posts",
+      arguments: { category: "credit-card-bonuses" },
+    });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "https://www.doctorofcredit.com/wp-json/wp/v2/posts?per_page=10&orderby=date&order=desc&categories=12",
+      expect.any(Object),
+    );
+  });
+
+  it("falls back to RSS with the shared post contract after WordPress fails", async () => {
+    const rss = `<?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+        <channel>
+          <item>
+            <title>RSS Bank Bonus &#8211; Updated</title>
+            <link>https://www.doctorofcredit.com/rss-bank-bonus/</link>
+            <pubDate>Thu, 01 Jan 2026 16:30:00 +0000</pubDate>
+            <guid isPermaLink="false">https://www.doctorofcredit.com/?p=401?d=20260731</guid>
+            <content:encoded><![CDATA[<p>Open an account &amp; earn <strong>$400</strong>.</p>]]></content:encoded>
+          </item>
+        </channel>
+      </rss>`;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("maintenance", { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(rss, {
+          status: 200,
+          headers: { "content-type": "application/rss+xml" },
+        }),
+      );
+    const client = await connectClient(
+      fetcher,
+      () => new Date("2026-08-01T12:00:00Z"),
+    );
+
+    const result = await client.callTool({
+      name: "get_recent_posts",
+      arguments: { limit: 1 },
+    });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "https://www.doctorofcredit.com/feed/",
+      expect.objectContaining({ headers: { accept: "application/rss+xml" } }),
+    );
+    expect(result.structuredContent).toEqual({
+      posts: [
+        {
+          source: {
+            id: 401,
+            url: "https://www.doctorofcredit.com/rss-bank-bonus/",
+            title: "RSS Bank Bonus – Updated",
+            publishedAt: "2026-01-01T16:30:00.000Z",
+            modifiedAt: null,
+            articleText: "Open an account & earn $400.",
+          },
+          derived: {
+            outdatedWarning:
+              "This RSS post was published more than 180 days ago and may be outdated. RSS does not provide a modification date; verify the offer against the source before relying on it.",
+          },
+        },
+      ],
+    });
+  });
+
+  it("returns a clear error for a category slug that does not exist", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_recent_posts",
+      arguments: { category: "not-a-real-category" },
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Unknown Doctor of Credit category slug: not-a-real-category. Use list_categories to discover valid category slugs.",
+        },
+      ],
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns one actionable error when WordPress and RSS both fail", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("maintenance", { status: 503 }))
+      .mockRejectedValueOnce(new Error("connect ECONNRESET 192.0.2.10:443"));
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_recent_posts",
+      arguments: {},
+    });
+
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Could not retrieve recent Doctor of Credit posts: WordPress and RSS were unavailable or returned invalid data. Try again later.",
+        },
+      ],
+    });
+    expect(result).not.toHaveProperty("structuredContent");
+  });
+
+  it.each([
+    { label: "an empty category", arguments: { category: "" } },
+    { label: "a category name", arguments: { category: "Bank Bonuses" } },
+    { label: "a zero limit", arguments: { limit: 0 } },
+    { label: "a fractional limit", arguments: { limit: 1.5 } },
+    { label: "a limit above 100", arguments: { limit: 101 } },
+  ])("rejects $label without contacting upstream", async ({ arguments: args }) => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = await connectClient(fetcher);
+
+    const result = await client.callTool({
+      name: "get_recent_posts",
+      arguments: args,
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "Invalid arguments for tool get_recent_posts",
+          ),
+        },
+      ],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("retrieves a post by ID with cleaned text and explicit provenance", async () => {

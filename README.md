@@ -21,6 +21,9 @@ The server currently provides:
   WordPress API.
 - `get_post(url_or_id)` retrieves a post by its positive integer WordPress ID
   or HTTPS Doctor of Credit article URL.
+- `get_recent_posts(category?, limit?)` retrieves recent posts from WordPress,
+  optionally filtered by a category slug returned by `list_categories`. The
+  default limit is 10 and the maximum is 100.
 
 `get_post` returns source-backed fields under `post.source`: the stable ID,
 original URL, title, publication and modification timestamps, and cleaned
@@ -30,6 +33,13 @@ for more than 180 days. This conservative threshold uses the only dependable
 freshness signal available in the source contract—the modification timestamp—
 and avoids inferring an offer-specific expiration date from prose. It is a
 prompt to verify the source, not a claim that the offer is valid or expired.
+
+`get_recent_posts` falls back to the global or category-specific RSS feed when
+WordPress is unavailable or returns invalid data. RSS items use the same post
+shape, but RSS does not publish a modification timestamp, so `modifiedAt` is
+`null` for those results. Their outdated warning conservatively uses the
+publication timestamp instead. The server does not persist retrieved content
+or metadata.
 
 Upstream HTTP, network, and response-validation failures are returned as
 actionable MCP tool errors rather than empty or fabricated results.
@@ -49,7 +59,6 @@ compiled stdio entry point.
 
 I’d design the server around a few dependable retrieval tools:
 search_posts(query, category?, after?, limit?)
-get_recent_posts(category?, limit?)
 get_big_deals(limit?)
 Then add higher-level research tools:
 find_bank_bonuses(bank?, state?, amount_min?)

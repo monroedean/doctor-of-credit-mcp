@@ -25,6 +25,7 @@ describe("stdio entry point", () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       "list_categories",
       "get_post",
+      "get_recent_posts",
     ]);
   });
 });
